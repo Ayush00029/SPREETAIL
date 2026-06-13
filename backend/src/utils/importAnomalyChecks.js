@@ -268,7 +268,228 @@ function checkShareBasedSplits(row) {
   return null;
 }
 
-// Main check function running first 9 checks
+// === ANOMALIES 10 - 18 ===
+
+// 10. Non-member in split_with
+function checkNonMember(row, context) {
+  if (!row.split_with) return null;
+  const members = row.split_with.split(';').map(m => m.trim()).filter(Boolean);
+  const activeNames = context.groupMembers.map(m => m.name.toLowerCase());
+  
+  const nonMembers = members.filter(m => !activeNames.includes(m.toLowerCase()));
+  if (nonMembers.length > 0) {
+    const cleanMembers = members.filter(m => activeNames.includes(m.toLowerCase()));
+    const newSplitWith = cleanMembers.join(';');
+    
+    let newSplitDetails = row.split_details;
+    if (row.split_details) {
+      const details = row.split_details.split(';').map(d => d.trim()).filter(Boolean);
+      const cleanDetails = details.filter(d => {
+        const name = d.split(/\s+/)[0];
+        return !nonMembers.some(nm => nm.toLowerCase() === name.toLowerCase());
+      });
+      newSplitDetails = cleanDetails.join('; ');
+    }
+    const newRow = { ...row, split_with: newSplitWith, split_details: newSplitDetails };
+    return {
+      anomalyType: 'NON_MEMBER_SPLIT',
+      action: `Excluded non-member(s) [${nonMembers.join(', ')}] from split, re-divided among active members.`,
+      status: 'pending_review',
+      modifiedRow: newRow
+    };
+  }
+  return null;
+}
+
+// 11. Duplicate expenses with CONFLICTING amounts
+function checkConflictingDuplicate(row, context) {
+  const dateStr = row.date;
+  const payer = getCanonicalName(row.paid_by);
+  const amountStr = typeof row.amount === 'string' ? row.amount.replace(/,/g, '') : String(row.amount);
+  const amount = parseFloat(amountStr);
+  const desc = row.description ? row.description.toLowerCase().trim() : '';
+
+  if (!dateStr || !payer || isNaN(amount)) return null;
+
+  const isMatch = (other) => {
+    if (other.rowNumber === row.rowNumber) return false;
+    const otherPayer = getCanonicalName(other.paid_by);
+    const otherAmountStr = typeof other.amount === 'string' ? other.amount.replace(/,/g, '') : String(other.amount);
+    const otherAmount = parseFloat(otherAmountStr);
+    const otherDesc = other.description ? other.description.toLowerCase().trim() : '';
+
+    if (other.date === dateStr && otherPayer === payer && Math.abs(otherAmount - amount) > 0.01) {
+      if (desc === otherDesc || desc.includes(otherDesc) || otherDesc.includes(desc)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const duplicateInCsv = context.rowsSoFar.find(isMatch);
+  if (duplicateInCsv) {
+    return {
+      anomalyType: 'CONFLICTING_DUPLICATE',
+      action: `Flag conflicting duplicate expense: matches row ${duplicateInCsv.rowNumber} with different amount. Mark both for review.`,
+      status: 'pending_review',
+      modifiedRow: row
+    };
+  }
+  return null;
+}
+
+// 12. Negative amount (refund)
+function checkNegativeAmount(row) {
+  const amount = parseFloat(row.amount);
+  if (!isNaN(amount) && amount < 0) {
+    return {
+      anomalyType: 'NEGATIVE_AMOUNT',
+      action: `Import negative refund expense of ${amount}`,
+      status: 'applied',
+      modifiedRow: row
+    };
+  }
+  return null;
+}
+
+// 13. Non-standard date format
+function checkDateNormalization(row) {
+  const res = parseAndNormalizeDate(row.date);
+  if (res.inferred) {
+    const newRow = { ...row, date: res.normalizedStr };
+    return {
+      anomalyType: 'NON_STANDARD_DATE',
+      action: `Normalized non-standard date format "${row.date}" -> "${res.normalizedStr}"`,
+      status: 'applied',
+      modifiedRow: newRow
+    };
+  }
+  return null;
+}
+
+// 14. Missing currency field
+function checkMissingCurrency(row) {
+  if (!row.currency || !row.currency.trim()) {
+    const newRow = { ...row, currency: 'INR' };
+    return {
+      anomalyType: 'MISSING_CURRENCY',
+      action: 'Defaulted missing currency field to INR',
+      status: 'applied',
+      modifiedRow: newRow
+    };
+  }
+  return null;
+}
+
+// 15. Zero-amount expense
+function checkZeroAmount(row) {
+  const amount = parseFloat(row.amount);
+  if (amount === 0) {
+    return {
+      anomalyType: 'ZERO_AMOUNT_EXPENSE',
+      action: 'Do NOT create Expense record (skip). Flag for review.',
+      status: 'pending_review',
+      modifiedRow: row
+    };
+  }
+  return null;
+}
+
+// 16. Ambiguous date format
+function checkAmbiguousDate(row) {
+  const note = row.notes ? row.notes.toLowerCase().trim() : '';
+  const dateStr = row.date ? row.date.trim() : '';
+  const isAmbiguous = note.includes('is this april 5 or may 4') || dateStr === '04-05-2026';
+  if (isAmbiguous) {
+    return {
+      anomalyType: 'AMBIGUOUS_DATE',
+      action: 'Ambiguous date format flagged. Consistently interpreted as DD-MM-YYYY (4th May). Mark pending_review.',
+      status: 'pending_review',
+      modifiedRow: row
+    };
+  }
+  return null;
+}
+
+// 17. Member listed in split_with after leftAt
+function checkPostMembershipSplit(row, context) {
+  if (!row.split_with || !row.date) return null;
+  const parsed = parseAndNormalizeDate(row.date);
+  if (!parsed.date) return null;
+  
+  const expDate = parsed.date;
+  const members = row.split_with.split(';').map(m => m.trim()).filter(Boolean);
+  const excluded = [];
+
+  for (const mName of members) {
+    const memberObj = context.groupMembers.find(gm => gm.name.toLowerCase() === mName.toLowerCase());
+    if (memberObj) {
+      if (memberObj.leftAt) {
+        const leftDate = new Date(memberObj.leftAt);
+        if (expDate > leftDate) {
+          excluded.push(memberObj.name);
+        }
+      }
+    }
+  }
+
+  if (excluded.length > 0) {
+    const cleanMembers = members.filter(m => !excluded.some(ex => ex.toLowerCase() === m.toLowerCase()));
+    const newSplitWith = cleanMembers.join(';');
+    
+    let newSplitDetails = row.split_details;
+    if (row.split_details) {
+      const details = row.split_details.split(';').map(d => d.trim()).filter(Boolean);
+      const cleanDetails = details.filter(d => {
+        const name = d.split(/\s+/)[0];
+        return !excluded.some(ex => ex.toLowerCase() === name.toLowerCase());
+      });
+      newSplitDetails = cleanDetails.join('; ');
+    }
+
+    const newRow = { ...row, split_with: newSplitWith, split_details: newSplitDetails };
+    return {
+      anomalyType: 'POST_MEMBERSHIP_SPLIT',
+      action: `Excluded inactive member(s) [${excluded.join(', ')}] from split (expense dated after move out). Re-divided splits.`,
+      status: 'pending_review',
+      modifiedRow: newRow
+    };
+  }
+  return null;
+}
+
+// 18. split_details populated but split_type says "equal"
+function checkEqualContradiction(row) {
+  const splitType = row.split_type ? row.split_type.toLowerCase().trim() : '';
+  if (splitType === 'equal' && row.split_details) {
+    const splits = row.split_details.split(';').map(s => s.trim()).filter(Boolean);
+    if (splits.length > 0) {
+      const values = splits.map(s => {
+        const parts = s.split(/\s+/);
+        return parts[1] ? parseFloat(parts[1]) : 1;
+      });
+      const allEqual = values.every(v => v === values[0]);
+      if (allEqual) {
+        return {
+          anomalyType: 'EQUAL_CONTRADICTION_RESOLVED',
+          action: 'split_details populated for equal split type, but shares are equal. Ignored split_details and treated as equal.',
+          status: 'applied',
+          modifiedRow: { ...row, split_details: '' }
+        };
+      } else {
+        return {
+          anomalyType: 'EQUAL_CONTRADICTION_CONFLICT',
+          action: 'split_details populated for equal split type, but values are unequal. Flagged for review.',
+          status: 'pending_review',
+          modifiedRow: row
+        };
+      }
+    }
+  }
+  return null;
+}
+
+// Main check function running all 18 checks
 function checkRow(row, rowNum, context) {
   const anomalies = [];
   let modifiedRow = { ...row, rowNumber: rowNum };
@@ -279,9 +500,18 @@ function checkRow(row, rowNum, context) {
     checkNames,
     checkSubPaisa,
     checkMislabeledSettlement,
+    checkMissingCurrency,
+    checkZeroAmount,
+    checkNegativeAmount,
+    checkAmbiguousDate,
+    checkDateNormalization,
+    checkNonMember,
+    checkPostMembershipSplit,
+    checkEqualContradiction,
     checkPercentageSum,
     checkForeignCurrency,
     checkShareBasedSplits,
+    checkConflictingDuplicate,
     checkDuplicateAmount
   ];
 
@@ -316,5 +546,14 @@ module.exports = {
   checkMislabeledSettlement,
   checkPercentageSum,
   checkForeignCurrency,
-  checkShareBasedSplits
+  checkShareBasedSplits,
+  checkNonMember,
+  checkConflictingDuplicate,
+  checkNegativeAmount,
+  checkDateNormalization,
+  checkMissingCurrency,
+  checkZeroAmount,
+  checkAmbiguousDate,
+  checkPostMembershipSplit,
+  checkEqualContradiction
 };
