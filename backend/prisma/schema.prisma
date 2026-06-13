@@ -1,5 +1,5 @@
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -33,10 +33,10 @@ model Expense {
   groupId      Int
   paidById     Int
   description  String
-  amount       Decimal
+  amount       Float
   currency     String
-  exchangeRate Decimal  @default(1)
-  amountINR    Decimal
+  exchangeRate Float    @default(1)
+  amountINR    Float
   date         DateTime
   splitType    String   // equal | unequal | percentage | share
   isSettlement Boolean  @default(false)
@@ -46,7 +46,7 @@ model ExpenseShare {
   id          Int     @id @default(autoincrement())
   expenseId   Int
   userId      Int
-  shareAmount Decimal
+  shareAmount Float
 }
 
 model Payment {
@@ -54,7 +54,7 @@ model Payment {
   groupId    Int
   fromUserId Int
   toUserId   Int
-  amount     Decimal
+  amount     Float
   date       DateTime
   note       String?
 }
@@ -63,7 +63,7 @@ model ImportLog {
   id          Int      @id @default(autoincrement())
   importedAt  DateTime @default(now())
   rowNumber   Int
-  rawRow      Json
+  rawRow      String
   anomalyType String
   action      String
   status      String   @default("applied") // applied | pending_review | rejected
