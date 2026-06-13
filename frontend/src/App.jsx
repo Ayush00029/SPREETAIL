@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Link, useNavigate, us
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Groups from './pages/Groups';
+import GroupDetail from './pages/GroupDetail';
 
 // Persistent Navigation Header
 function Header() {
@@ -66,6 +67,11 @@ export default function App() {
             <Route path="/groups" element={
               <ProtectedRoute>
                 <Groups />
+              </ProtectedRoute>
+            } />
+            <Route path="/groups/:id" element={
+              <ProtectedRoute>
+                <GroupDetail />
               </ProtectedRoute>
             } />
             <Route path="*" element={<Navigate to="/login" replace />} />
