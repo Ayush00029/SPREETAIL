@@ -1,5 +1,5 @@
 const express = require('express');
-const router = express.Router({ mergeParams: true });
+const router = express.Router();
 const multer = require('multer');
 const papa = require('papaparse');
 const prisma = require('../prisma');
@@ -41,14 +41,14 @@ async function ensureGroupMembership(userId, groupId) {
       data: {
         groupId,
         userId,
-        joinedAt: new Date('2026-02-01') // Default start date for historical import
+        joinedAt: new Date('2026-02-01')
       }
     });
   }
 }
 
 // POST /groups/:id/import - Upload and process CSV file
-router.post('/', authenticateToken, upload.single('file'), async (req, res) => {
+router.post('/groups/:id/import', authenticateToken, upload.single('file'), async (req, res) => {
   try {
     const groupId = parseInt(req.params.id);
     if (!req.file) {
@@ -251,6 +251,245 @@ router.post('/', authenticateToken, upload.single('file'), async (req, res) => {
     });
   } catch (error) {
     console.error('CSV Import error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /groups/:id/import-report - Get logs for this group
+router.get('/groups/:id/import-report', authenticateToken, async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.id);
+
+    // Verify user belongs to the group
+    const isMember = await prisma.groupMembership.findFirst({
+      where: { groupId, userId: req.user.id }
+    });
+    if (!isMember) {
+      return res.status(403).json({ error: 'Forbidden: You are not a member of this group' });
+    }
+
+    const logs = await prisma.importLog.findMany({
+      orderBy: { rowNumber: 'asc' }
+    });
+
+    const groupLogs = [];
+    for (const log of logs) {
+      try {
+        const rawObj = JSON.parse(log.rawRow);
+        if (rawObj.groupId === groupId) {
+          groupLogs.push({
+            id: log.id,
+            importedAt: log.importedAt,
+            rowNumber: log.rowNumber,
+            rawRow: rawObj,
+            anomalyType: log.anomalyType,
+            action: log.action,
+            status: log.status
+          });
+        }
+      } catch (e) {
+        // ignore malformed logs
+      }
+    }
+
+    res.json(groupLogs);
+  } catch (error) {
+    console.error('Error fetching import report:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PATCH /import-logs/:id - Approve or reject a pending anomaly log entry
+router.patch('/import-logs/:id', authenticateToken, async (req, res) => {
+  try {
+    const logId = parseInt(req.params.id);
+    const { status, payerName, dateOverride } = req.body;
+
+    if (!['applied', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be applied or rejected' });
+    }
+
+    const logEntry = await prisma.importLog.findUnique({
+      where: { id: logId }
+    });
+    if (!logEntry) {
+      return res.status(404).json({ error: 'ImportLog entry not found' });
+    }
+
+    const rawObj = JSON.parse(logEntry.rawRow);
+    const groupId = rawObj.groupId;
+    const rowNumber = logEntry.rowNumber;
+
+    // Verify user belongs to the group
+    const isMember = await prisma.groupMembership.findFirst({
+      where: { groupId, userId: req.user.id }
+    });
+    if (!isMember) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (status === 'rejected') {
+      const logs = await prisma.importLog.findMany({
+        where: { rowNumber, status: 'pending_review' }
+      });
+      const groupLogIds = logs.filter(l => {
+        try {
+          return JSON.parse(l.rawRow).groupId === groupId;
+        } catch {
+          return false;
+        }
+      }).map(l => l.id);
+
+      await prisma.importLog.updateMany({
+        where: { id: { in: groupLogIds } },
+        data: { status: 'rejected' }
+      });
+
+      return res.json({ message: 'Row import rejected successfully' });
+    }
+
+    if (status === 'applied') {
+      const logs = await prisma.importLog.findMany({
+        where: { rowNumber, status: 'pending_review' }
+      });
+      const groupLogs = logs.filter(l => {
+        try {
+          return JSON.parse(l.rawRow).groupId === groupId;
+        } catch {
+          return false;
+        }
+      });
+      const groupLogIds = groupLogs.map(l => l.id);
+
+      await prisma.importLog.updateMany({
+        where: { id: { in: groupLogIds } },
+        data: { status: 'applied' }
+      });
+
+      const mod = rawObj.modifiedRow;
+
+      // Apply overrides if provided by the user during approval
+      if (payerName) {
+        mod.paid_by = payerName;
+      }
+      if (dateOverride) {
+        mod.date = dateOverride;
+      }
+
+      // Check if zero-amount skip
+      if (parseFloat(mod.amount) === 0) {
+        return res.json({ message: 'Row processed (skipped zero-amount expense)' });
+      }
+
+      // Insert into database
+      const payerUser = await getOrCreateUser(mod.paid_by);
+      if (!payerUser) {
+        return res.status(400).json({ error: 'Invalid or missing payer' });
+      }
+      await ensureGroupMembership(payerUser.id, groupId);
+
+      if (mod.isSettlement) {
+        const recipientName = mod.split_with ? mod.split_with.split(';')[0] : '';
+        const recipientUser = await getOrCreateUser(recipientName);
+        if (recipientUser) {
+          await ensureGroupMembership(recipientUser.id, groupId);
+          const parsedDateRes = parseAndNormalizeDate(mod.date);
+
+          const payment = await prisma.payment.create({
+            data: {
+              groupId,
+              fromUserId: payerUser.id,
+              toUserId: recipientUser.id,
+              amount: parseFloat(mod.amount),
+              date: parsedDateRes.date || new Date(),
+              note: mod.notes || mod.description
+            }
+          });
+          return res.json({ message: 'Settlement approved and applied', payment });
+        } else {
+          return res.status(400).json({ error: 'Recipient not found' });
+        }
+      } else {
+        const parsedDateRes = parseAndNormalizeDate(mod.date);
+        const amount = parseFloat(mod.amount);
+        const exchangeRate = parseFloat(mod.exchangeRate || 1);
+        const amountINR = parseFloat(mod.amountINR || (amount * exchangeRate).toFixed(2));
+
+        const expense = await prisma.expense.create({
+          data: {
+            groupId,
+            paidById: payerUser.id,
+            description: mod.description || 'Approved CSV Expense',
+            amount,
+            currency: mod.currency || 'INR',
+            exchangeRate,
+            amountINR,
+            date: parsedDateRes.date || new Date(),
+            splitType: mod.split_type || 'equal'
+          }
+        });
+
+        const splitMembers = mod.split_with ? mod.split_with.split(';').map(m => m.trim()).filter(Boolean) : [];
+        const splitUsers = [];
+        for (const name of splitMembers) {
+          const u = await getOrCreateUser(name);
+          if (u) {
+            await ensureGroupMembership(u.id, groupId);
+            splitUsers.push(u);
+          }
+        }
+
+        let shares = [];
+        const count = splitUsers.length;
+
+        if (mod.split_type === 'equal') {
+          const shareAmount = parseFloat((amountINR / count).toFixed(2));
+          shares = splitUsers.map(su => ({ userId: su.id, shareAmount }));
+        } else if (mod.split_type === 'unequal') {
+          const details = mod.split_details ? mod.split_details.split(';').map(d => d.trim()).filter(Boolean) : [];
+          shares = splitUsers.map(su => {
+            const detail = details.find(d => d.toLowerCase().startsWith(su.name.toLowerCase()));
+            const val = detail ? parseFloat(detail.replace(/[^0-9.]/g, '')) : 0;
+            return { userId: su.id, shareAmount: val };
+          });
+        } else if (mod.split_type === 'percentage') {
+          const details = mod.split_details ? mod.split_details.split(';').map(d => d.trim()).filter(Boolean) : [];
+          shares = splitUsers.map(su => {
+            const detail = details.find(d => d.toLowerCase().startsWith(su.name.toLowerCase()));
+            const val = detail ? parseFloat(detail.replace(/[^0-9.]/g, '')) : 0;
+            const shareAmount = parseFloat(((val / 100) * amountINR).toFixed(2));
+            return { userId: su.id, shareAmount };
+          });
+        } else if (mod.split_type === 'share') {
+          const details = mod.split_details ? mod.split_details.split(';').map(d => d.trim()).filter(Boolean) : [];
+          let totalRatios = 0;
+          const userRatios = splitUsers.map(su => {
+            const detail = details.find(d => d.toLowerCase().startsWith(su.name.toLowerCase()));
+            const val = detail ? parseFloat(detail.replace(/[^0-9.]/g, '')) : 1;
+            totalRatios += val;
+            return { userId: su.id, ratio: val };
+          });
+          shares = userRatios.map(ur => ({
+            userId: ur.userId,
+            shareAmount: parseFloat(((ur.ratio / totalRatios) * amountINR).toFixed(2))
+          }));
+        }
+
+        for (const share of shares) {
+          await prisma.expenseShare.create({
+            data: {
+              expenseId: expense.id,
+              userId: share.userId,
+              shareAmount: share.shareAmount
+            }
+          });
+        }
+
+        return res.json({ message: 'Expense approved and applied', expense });
+      }
+    }
+  } catch (error) {
+    console.error('Error updating import log:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

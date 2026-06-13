@@ -17,7 +17,7 @@ app.use('/auth', authRouter);
 app.use('/groups', groupsRouter);
 app.use('/groups/:id/expenses', expensesRouter);
 app.use('/groups/:id/payments', paymentsRouter);
-app.use('/groups/:id/import', importRouter);
+app.use('/', importRouter);
 
 // Basic health check
 app.get('/health', (req, res) => {
