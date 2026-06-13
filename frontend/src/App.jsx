@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import Groups from './pages/Groups';
 
 // Persistent Navigation Header
 function Header() {
@@ -64,9 +65,7 @@ export default function App() {
             <Route path="/register" element={<Register />} />
             <Route path="/groups" element={
               <ProtectedRoute>
-                <div className="glass-panel animate-fade-in">
-                  <h2>Groups list coming soon!</h2>
-                </div>
+                <Groups />
               </ProtectedRoute>
             } />
             <Route path="*" element={<Navigate to="/login" replace />} />
