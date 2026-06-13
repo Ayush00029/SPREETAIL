@@ -190,4 +190,151 @@ router.patch('/:id/members/:userId', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /groups/:id/balances - Retrieve net balances and simplified debts
+router.get('/:id/balances', authenticateToken, async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.id);
+
+    // Verify caller belongs to the group
+    const isMember = await prisma.groupMembership.findFirst({
+      where: { groupId, userId: req.user.id }
+    });
+    if (!isMember) {
+      return res.status(403).json({ error: 'Forbidden: You are not a member of this group' });
+    }
+
+    const { getGroupBalances } = require('../utils/balanceCalculator');
+    const result = await getGroupBalances(groupId);
+    res.json(result);
+  } catch (error) {
+    console.error('Error calculating balances:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /groups/:id/balances/:userId - Itemized drill-down for a specific member
+router.get('/:id/balances/:userId', authenticateToken, async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.id);
+    const userId = parseInt(req.params.userId);
+
+    // Verify caller belongs to the group
+    const isCallerMember = await prisma.groupMembership.findFirst({
+      where: { groupId, userId: req.user.id }
+    });
+    if (!isCallerMember) {
+      return res.status(403).json({ error: 'Forbidden: You are not a member of this group' });
+    }
+
+    const { isActiveOnDate } = require('../utils/balanceCalculator');
+
+    // Fetch memberships for active verification
+    const memberships = await prisma.groupMembership.findMany({
+      where: { groupId }
+    });
+
+    const items = [];
+
+    // 1. Expenses paid by this user
+    const paidExpenses = await prisma.expense.findMany({
+      where: { groupId, paidById: userId, isSettlement: false },
+      orderBy: { date: 'asc' }
+    });
+
+    for (const exp of paidExpenses) {
+      if (isActiveOnDate(userId, exp.date, memberships)) {
+        items.push({
+          type: 'expense_paid',
+          id: exp.id,
+          description: exp.description,
+          amount: exp.amountINR,
+          date: exp.date,
+          direction: 'credit' // payer gets credited
+        });
+      }
+    }
+
+    // 2. Shares of expenses this user owes
+    const userShares = await prisma.expenseShare.findMany({
+      where: {
+        userId,
+        expense: {
+          groupId,
+          isSettlement: false
+        }
+      },
+      include: {
+        expense: true
+      }
+    });
+
+    for (const share of userShares) {
+      if (isActiveOnDate(userId, share.expense.date, memberships)) {
+        items.push({
+          type: 'expense_share',
+          id: share.expenseId,
+          description: share.expense.description,
+          amount: share.shareAmount,
+          date: share.expense.date,
+          direction: 'debit' // owes money
+        });
+      }
+    }
+
+    // 3. Sent payments
+    const sentPayments = await prisma.payment.findMany({
+      where: { groupId, fromUserId: userId }
+    });
+
+    for (const pay of sentPayments) {
+      items.push({
+        type: 'payment_sent',
+        id: pay.id,
+        description: pay.note || `Repayment to member`,
+        amount: pay.amount,
+        date: pay.date,
+        direction: 'credit' // increases their net balance
+      });
+    }
+
+    // 4. Received payments
+    const receivedPayments = await prisma.payment.findMany({
+      where: { groupId, toUserId: userId }
+    });
+
+    for (const pay of receivedPayments) {
+      items.push({
+        type: 'payment_received',
+        id: pay.id,
+        description: pay.note || `Repayment from member`,
+        amount: pay.amount,
+        date: pay.date,
+        direction: 'debit' // reduces their net credit
+      });
+    }
+
+    // Sort chronologically
+    items.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    // Calculate total net balance by adding credits and subtracting debits
+    let netBalance = 0;
+    for (const item of items) {
+      if (item.direction === 'credit') {
+        netBalance += item.amount;
+      } else {
+        netBalance -= item.amount;
+      }
+    }
+
+    res.json({
+      userId,
+      netBalance: parseFloat(netBalance.toFixed(2)),
+      items
+    });
+  } catch (error) {
+    console.error('Error fetching balance drill-down:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 module.exports = router;
