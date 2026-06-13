@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Groups from './pages/Groups';
 import GroupDetail from './pages/GroupDetail';
+import ImportPage from './pages/ImportPage';
 
 // Persistent Navigation Header
 function Header() {
@@ -72,6 +73,11 @@ export default function App() {
             <Route path="/groups/:id" element={
               <ProtectedRoute>
                 <GroupDetail />
+              </ProtectedRoute>
+            } />
+            <Route path="/groups/:id/import" element={
+              <ProtectedRoute>
+                <ImportPage />
               </ProtectedRoute>
             } />
             <Route path="*" element={<Navigate to="/login" replace />} />
