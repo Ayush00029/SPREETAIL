@@ -3,6 +3,7 @@ const cors = require('cors');
 const authRouter = require('./routes/auth');
 const groupsRouter = require('./routes/groups');
 const expensesRouter = require('./routes/expenses');
+const paymentsRouter = require('./routes/payments');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -14,6 +15,7 @@ app.use(express.json());
 app.use('/auth', authRouter);
 app.use('/groups', groupsRouter);
 app.use('/groups/:id/expenses', expensesRouter);
+app.use('/groups/:id/payments', paymentsRouter);
 
 // Basic health check
 app.get('/health', (req, res) => {
