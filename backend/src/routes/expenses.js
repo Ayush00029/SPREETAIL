@@ -130,9 +130,56 @@ router.post('/', authenticateToken, async (req, res) => {
           error: `Sum of unequal splits (${totalSplit}) must equal the total amount (${computedAmountINR})`
         });
       }
-    } else if (normalizedSplitType === 'percentage' || normalizedSplitType === 'share') {
-      // Placeholder for next commit
-      return res.status(400).json({ error: 'Percentage and Share splits are not implemented yet' });
+    } else if (normalizedSplitType === 'percentage') {
+      if (!splitDetails) {
+        return res.status(400).json({ error: 'splitDetails is required for percentage split' });
+      }
+      let totalPct = 0;
+      const pctValues = splitWithUserIds.map(uId => {
+        let val = 0;
+        if (Array.isArray(splitDetails)) {
+          const detail = splitDetails.find(d => d.userId === parseInt(uId));
+          val = detail ? detail.value : 0;
+        } else {
+          val = splitDetails[uId] !== undefined ? splitDetails[uId] : 0;
+        }
+        const pct = parseFloat(val || 0);
+        totalPct += pct;
+        return { userId: parseInt(uId), pct };
+      });
+
+      const divisor = totalPct === 0 ? 1 : totalPct / 100;
+      shares = pctValues.map(item => {
+        const normalizedPct = item.pct / divisor;
+        const shareAmount = parseFloat(((normalizedPct / 100) * computedAmountINR).toFixed(2));
+        return { userId: item.userId, shareAmount };
+      });
+    } else if (normalizedSplitType === 'share') {
+      if (!splitDetails) {
+        return res.status(400).json({ error: 'splitDetails is required for share split' });
+      }
+      let totalShares = 0;
+      const shareValues = splitWithUserIds.map(uId => {
+        let val = 0;
+        if (Array.isArray(splitDetails)) {
+          const detail = splitDetails.find(d => d.userId === parseInt(uId));
+          val = detail ? detail.value : 0;
+        } else {
+          val = splitDetails[uId] !== undefined ? splitDetails[uId] : 0;
+        }
+        const sh = parseFloat(val || 0);
+        totalShares += sh;
+        return { userId: parseInt(uId), sh };
+      });
+
+      if (totalShares === 0) {
+        return res.status(400).json({ error: 'Total shares cannot be zero' });
+      }
+
+      shares = shareValues.map(item => {
+        const shareAmount = parseFloat(((item.sh / totalShares) * computedAmountINR).toFixed(2));
+        return { userId: item.userId, shareAmount };
+      });
     } else {
       return res.status(400).json({ error: 'Invalid split type. Must be equal, unequal, percentage, or share' });
     }
