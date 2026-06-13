@@ -19,3 +19,53 @@ model Group {
   name      String
   createdAt DateTime @default(now())
 }
+
+model GroupMembership {
+  id       Int       @id @default(autoincrement())
+  groupId  Int
+  userId   Int
+  joinedAt DateTime
+  leftAt   DateTime?
+}
+
+model Expense {
+  id           Int      @id @default(autoincrement())
+  groupId      Int
+  paidById     Int
+  description  String
+  amount       Decimal
+  currency     String
+  exchangeRate Decimal  @default(1)
+  amountINR    Decimal
+  date         DateTime
+  splitType    String   // equal | unequal | percentage | share
+  isSettlement Boolean  @default(false)
+}
+
+model ExpenseShare {
+  id          Int     @id @default(autoincrement())
+  expenseId   Int
+  userId      Int
+  shareAmount Decimal
+}
+
+model Payment {
+  id         Int      @id @default(autoincrement())
+  groupId    Int
+  fromUserId Int
+  toUserId   Int
+  amount     Decimal
+  date       DateTime
+  note       String?
+}
+
+model ImportLog {
+  id          Int      @id @default(autoincrement())
+  importedAt  DateTime @default(now())
+  rowNumber   Int
+  rawRow      Json
+  anomalyType String
+  action      String
+  status      String   @default("applied") // applied | pending_review | rejected
+}
+
