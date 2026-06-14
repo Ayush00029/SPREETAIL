@@ -411,6 +411,24 @@ function checkAmbiguousDate(row) {
   return null;
 }
 
+// 19. Future-dated expense
+function checkFutureDate(row) {
+  if (!row.date) return null;
+  const parsed = parseAndNormalizeDate(row.date);
+  if (!parsed.date) return null;
+
+  const currentDate = new Date();
+  if (parsed.date > currentDate) {
+    return {
+      anomalyType: 'FUTURE_DATED_EXPENSE',
+      action: `Flag future-dated expense: date "${row.date}" is in the future. Mark pending_review.`,
+      status: 'pending_review',
+      modifiedRow: row
+    };
+  }
+  return null;
+}
+
 // 17. Member listed in split_with after leftAt
 function checkPostMembershipSplit(row, context) {
   if (!row.split_with || !row.date) return null;
@@ -504,6 +522,7 @@ function checkRow(row, rowNum, context) {
     checkZeroAmount,
     checkNegativeAmount,
     checkAmbiguousDate,
+    checkFutureDate,
     checkDateNormalization,
     checkNonMember,
     checkPostMembershipSplit,
@@ -555,5 +574,6 @@ module.exports = {
   checkZeroAmount,
   checkAmbiguousDate,
   checkPostMembershipSplit,
-  checkEqualContradiction
+  checkEqualContradiction,
+  checkFutureDate
 };
