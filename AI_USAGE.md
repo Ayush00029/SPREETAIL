@@ -4,18 +4,10 @@ This document outlines the AI tools used, key prompts, and three specific cases 
 
 ---
 
-## 1. AI Tools & Key Prompts
+## 1. AI Tools Used
 
 ### Tool Used
 - **Antigravity AI Coding Assistant** (developed by Google DeepMind)
-
-### Key Prompts
-- *"start postgresql"*
-- *"do not use docker use another instead of this"*
-- *"continue"*
-- *"how to deploy it on vercel and render"*
-- *"deploy this on vercel"*
-- *"depoy backend on render"*
 
 ---
 
